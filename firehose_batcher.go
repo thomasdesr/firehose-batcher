@@ -44,6 +44,17 @@ func (fb *FirehoseBatcher) Add(msg []byte) error {
 	return nil
 }
 
+// AddFromChan is a convenience wrapper around Add that just keeps adding until an error is encountered
+func (fb *FirehoseBatcher) AddFromChan(c chan []byte) error {
+	for msg := range c {
+		if err := fb.Add(msg); err != nil {
+			return errors.Wrap(err, "failed to add record to batcher")
+		}
+	}
+
+	return nil
+}
+
 func (fb *FirehoseBatcher) Start(streamName string) error {
 	var overflow *firehose.Record
 	for stop := false; !stop; {

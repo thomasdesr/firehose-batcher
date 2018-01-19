@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -90,11 +89,7 @@ func main() {
 	}()
 
 	lines := bufferedLineSplitter(input)
-	for line := range lines {
-		if err := batcher.Add(line); err != nil {
-			log.Println(errors.Wrap(err, "failed to add record to batcher"))
-		}
-
-		fmt.Print(".")
+	if err := batcher.AddFromChan(lines); err != nil {
+		log.Println(errors.Wrap(err, "adding lines failed"))
 	}
 }
