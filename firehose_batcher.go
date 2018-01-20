@@ -58,13 +58,13 @@ func (fb *FirehoseBatcher) AddFromChan(c chan []byte) error {
 func (fb *FirehoseBatcher) Start(streamName string) error {
 	var overflow *firehose.Record
 	for stop := false; !stop; {
-		buf := make([]*firehose.Record, 0, BATCH_ITEM_LIMIT)
-		bufSize := 0
+		batch := make([]*firehose.Record, 0, BATCH_ITEM_LIMIT)
+		batchSize := 0
 
 		if overflow == nil {
-			buf = append(buf, &firehose.Record{Data: <-fb.inputBuffer})
+			batch = append(batch, &firehose.Record{Data: <-fb.inputBuffer})
 		} else {
-			buf = append(buf, overflow)
+			batch = append(batch, overflow)
 			overflow = nil
 		}
 
@@ -82,18 +82,18 @@ func (fb *FirehoseBatcher) Start(streamName string) error {
 				}
 
 				record := &firehose.Record{Data: item}
-				if bufSize+len(item) > BATCH_SIZE_LIMIT {
+				if batchSize+len(item) > BATCH_SIZE_LIMIT {
 					// We're gonna overflow a batch, save the current one and end the batch early
 					overflow = record
 					break BatchingLoop
 				}
 
-				buf = append(buf, record)
-				bufSize += len(item)
+				batch = append(batch, record)
+				batchSize += len(item)
 			}
 		}
 
-		if err := fb.sendBatch(streamName, buf); err != nil {
+		if err := fb.sendBatch(streamName, batch); err != nil {
 			return errors.Wrap(err, "error sending batch")
 		}
 	}
