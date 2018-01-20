@@ -74,15 +74,13 @@ func bufferedLineSplitter(in io.Reader) chan []byte {
 func main() {
 	firehoseClient := firehose.New(session.Must(session.NewSession()))
 
-	firehoseStreamName := "osquery-fleet-test"
-
 	batcher, err := NewFirehoseBatcher(firehoseClient, time.Second*60)
 	if err != nil {
 		log.Fatal(errors.Wrap(err, "failed to create firehose batcher"))
 	}
 
 	go func() {
-		err := batcher.Start(firehoseStreamName)
+		err := batcher.Start(kinesisStreamName)
 		if err != nil {
 			log.Fatal(errors.Wrap(err, "batch sending exited early"))
 		}
