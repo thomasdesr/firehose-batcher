@@ -99,7 +99,7 @@ func main() {
 	}()
 
 	lines := bufferedLineSplitter(f.cfg.source)
-	if err := batcher.AddFromChan(lines); err != nil {
+	if err := batcher.AddRawFromChan(lines); err != nil {
 		log.Println(errors.Wrap(err, "adding lines failed"))
 	}
 }
