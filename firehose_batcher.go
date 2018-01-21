@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 )
 
+// FirehoseBatcher is a wrapper around a firehose client that makes it easier to send data to firehose using the PutRecordBatch API. It'll buffer data internally to construct batches.
 type FirehoseBatcher struct {
 	maxSendInterval time.Duration
 
@@ -18,18 +19,20 @@ type FirehoseBatcher struct {
 	closed bool
 }
 
+// New constructs a FirehoseBatcher that will send batches to Firehose whenever either a batch is full (size or length) or every interval.
 func New(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, error) {
 	fb := &FirehoseBatcher{
 		maxSendInterval: sendInterval,
 		firehoseClient:  fc,
 
 		inputBuffer:     make(chan []byte, BATCH_ITEM_LIMIT),
-		batchSendBuffer: make(chan *Batch, 1),
+		batchSendBuffer: make(chan *Batch), // TODO(@thomas): Consider making this an actual buffer when we can run multiple senders
 	}
 
 	return fb, nil
 }
 
+// AddRaw takes a byte buffer to send to Firehose. It will return an error if the size of msg exceeds the max allowed item size (see limits.go). Will block if the send buffers are full.
 func (fb *FirehoseBatcher) Add(msg []byte) error {
 	if len(msg) > PER_ITEM_SIZE_LIMIT {
 		return errors.New("item exceeds firehose's max item size")
@@ -39,7 +42,7 @@ func (fb *FirehoseBatcher) Add(msg []byte) error {
 	return nil
 }
 
-// AddFromChan is a convenience wrapper around Add that just keeps adding until an error is encountered
+// AddFromChan is a convenience wrapper around Add that just keeps adding records until an error occurs.
 func (fb *FirehoseBatcher) AddFromChan(c chan []byte) error {
 	for msg := range c {
 		if err := fb.Add(msg); err != nil {
@@ -73,8 +76,8 @@ func (fb *FirehoseBatcher) startBatching() {
 				switch err := batch.Add(record); err {
 				case nil:
 					// Noop
-				case ErrSizeOverflow, ErrLengthOverflow:
-					// Send the batch and restart with overflowing record
+				case ErrBatchSizeOverflow, ErrBatchLengthOverflow:
+					// Send the batch along and restart with the overflowing record
 					fb.batchSendBuffer <- batch
 					batch = NewBatch(record)
 				default:
@@ -99,6 +102,7 @@ func (fb *FirehoseBatcher) sendBatches(streamName string) error {
 	return nil
 }
 
+// Start creating batches and sending data to the provided Firehose Stream.
 func (fb *FirehoseBatcher) Start(streamName string) error {
 	go fb.startBatching()
 	return fb.sendBatches(streamName)
