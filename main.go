@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"io"
 	"log"
 	"os"
@@ -10,38 +9,47 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/firehose"
+	flags "github.com/jessevdk/go-flags"
 	"github.com/pkg/errors"
 	"github.com/thomaso-mirodin/tailer"
 )
 
-var (
-	path              = flag.String("path", "-", "What file to tail")
-	kinesisStreamName = flag.String("stream_name", "", "What kinesis firehose stream to write to")
+type Flags struct {
+	Path string `short:"f" long:"filename" default:"-" description:"Path to file to tail, defaults to stdin"`
+	Args struct {
+		FirehoseStreamName string `required:"true" positional-arg-name:"firehose_stream_name"`
+	} `positional-args:"true"`
 
-	input io.Reader = nil
-)
+	cfg struct {
+		source   io.Reader
+		firehose *firehose.Firehose
+	}
+}
 
-func init() {
-	flag.Parse()
+func ParseFlags() (*Flags, error) {
+	f := new(Flags)
+	_, err := flags.Parse(f)
+	if err != nil {
+		return nil, err
+	}
 
-	if *path == "-" {
-		input = os.Stdin
-	} else {
+	switch f.Path {
+	case "-":
+		f.cfg.source = os.Stdin
+	default:
 		var err error
-		input, err = tailer.NewFile(
-			*path,
+		f.cfg.source, err = tailer.NewFile(
+			f.Path,
 			tailer.SetBufferSize(4*1024*1024),
 		)
 		if err != nil {
-			log.Fatal(errors.Wrap(err, "failed to create tailer"))
+			return nil, errors.Wrap(err, "failed to create tailer")
 		}
 	}
 
-	if *kinesisStreamName == "" {
-		log.Println("No stream name provided")
-		flag.Usage()
-		os.Exit(1)
-	}
+	f.cfg.firehose = firehose.New(session.Must(session.NewSession()))
+
+	return f, nil
 }
 
 func bufferedLineSplitter(in io.Reader) chan []byte {
@@ -72,21 +80,24 @@ func bufferedLineSplitter(in io.Reader) chan []byte {
 }
 
 func main() {
-	firehoseClient := firehose.New(session.Must(session.NewSession()))
+	f, err := ParseFlags()
+	if err != nil {
+		log.Fatal(errors.Wrap(err, "failed to parse flags"))
+	}
 
-	batcher, err := NewFirehoseBatcher(firehoseClient, time.Second*60)
+	batcher, err := NewFirehoseBatcher(f.cfg.firehose, time.Second*60)
 	if err != nil {
 		log.Fatal(errors.Wrap(err, "failed to create firehose batcher"))
 	}
 
 	go func() {
-		err := batcher.Start(kinesisStreamName)
+		err := batcher.Start(f.Args.FirehoseStreamName)
 		if err != nil {
 			log.Fatal(errors.Wrap(err, "batch sending exited early"))
 		}
 	}()
 
-	lines := bufferedLineSplitter(input)
+	lines := bufferedLineSplitter(f.cfg.source)
 	if err := batcher.AddFromChan(lines); err != nil {
 		log.Println(errors.Wrap(err, "adding lines failed"))
 	}
