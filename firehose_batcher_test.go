@@ -105,12 +105,15 @@ func TestBatching(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assert := assert.New(t)
 
-			fb, _ := New(nil, test.sendTimeout)
+			fb, err := New(nil, "n/a", test.sendTimeout)
+			if err != nil {
+				panic(err)
+			}
 			go fb.startBatching()
 
 			go func() {
 				for _, msg := range test.data {
-					assert.Nil(fb.AddRaw(msg))
+					assert.NoError(fb.AddRaw(msg))
 				}
 			}()
 
@@ -118,8 +121,8 @@ func TestBatching(t *testing.T) {
 				select {
 				case batch := <-fb.batchSendBuffer:
 					assert.Equal(expectedBatch.Length(), batch.Length(), "batch length")
-					assert.Equal(expectedBatch.size, batch.size, "batch size")
-					assert.Equal(expectedBatch, batch)
+					assert.Equal(expectedBatch.Size(), batch.Size(), "batch size")
+					assert.Equal(expectedBatch.contents, batch.contents, "batch contents")
 				case <-time.After(test.sendTimeout * 5):
 					t.Error("5 * sendTime exceeded")
 				}

@@ -5,25 +5,27 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/firehose"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // FirehoseBatcher is a wrapper around a firehose client that makes it easier to send data to firehose using the PutRecordBatch API. It'll buffer data internally to construct batches before sending them onward.
 type FirehoseBatcher struct {
+	streamName      string
 	maxSendInterval time.Duration
 
 	firehoseClient *firehose.Firehose
 
 	inputBuffer     chan []byte
 	batchSendBuffer chan *Batch
-
-	closed bool
 }
 
 // New constructs a FirehoseBatcher that will send batches to Firehose whenever either a batch is full (size or length) or every interval.
-func New(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, error) {
+func New(fc *firehose.Firehose, streamName string, sendTimeout time.Duration) (*FirehoseBatcher, error) {
 	fb := &FirehoseBatcher{
-		maxSendInterval: sendInterval,
-		firehoseClient:  fc,
+		streamName:      streamName,
+		maxSendInterval: sendTimeout,
+
+		firehoseClient: fc,
 
 		inputBuffer:     make(chan []byte, BATCH_ITEM_LIMIT),
 		batchSendBuffer: make(chan *Batch), // TODO(@thomas): Consider making this an actual buffer when we can run multiple senders
@@ -39,6 +41,7 @@ func (fb *FirehoseBatcher) AddRaw(msg []byte) error {
 	}
 
 	fb.inputBuffer <- msg
+	BytesRead.Add(float64(len(msg)))
 	return nil
 }
 
@@ -57,7 +60,8 @@ func (fb *FirehoseBatcher) startBatching() {
 	defer close(fb.batchSendBuffer)
 
 	for {
-		batch := NewBatch(&firehose.Record{Data: <-fb.inputBuffer})
+		initial := <-fb.inputBuffer
+		batch := NewBatch(&firehose.Record{Data: initial})
 
 	BatchingLoop:
 		for batch.Length() < BATCH_ITEM_LIMIT {
@@ -70,7 +74,7 @@ func (fb *FirehoseBatcher) startBatching() {
 			case b, ok := <-fb.inputBuffer:
 				if !ok {
 					// Input channel is closed, we're done here send the last batch and return
-					fb.batchSendBuffer <- batch
+					fb.queueBatch(batch)
 					return
 				}
 
@@ -80,7 +84,7 @@ func (fb *FirehoseBatcher) startBatching() {
 					// Noop
 				case ErrBatchSizeOverflow, ErrBatchLengthOverflow:
 					// Batch is full: send the batch along and start a new batch with the overflowing record
-					fb.batchSendBuffer <- batch
+					fb.queueBatch(batch)
 					batch = NewBatch(record)
 				default:
 					panic("Unknown error from batch construction")
@@ -88,24 +92,39 @@ func (fb *FirehoseBatcher) startBatching() {
 			}
 		}
 
-		fb.batchSendBuffer <- batch
+		fb.queueBatch(batch)
 	}
 }
 
+func (fb *FirehoseBatcher) queueBatch(batch *Batch) {
+	BatchSize.Observe(float64(batch.Size()))
+	BatchLength.Observe(float64(batch.Length()))
+
+	batch.fillTimer.ObserveDuration()
+
+	fb.batchSendBuffer <- batch
+}
+
+// TODO(@thomas): retry logic here :D
 func (fb *FirehoseBatcher) sendBatches(streamName string) error {
 	for batch := range fb.batchSendBuffer {
+		t := prometheus.NewTimer(BatchSendLatency)
+
 		err := batch.Send(fb.firehoseClient, streamName)
-		// TODO(@thomas): retry logic here :D
 		if err != nil {
 			return errors.Wrap(err, "error sending batch")
 		}
+
+		t.ObserveDuration()
+		BytesSent.Add(float64(batch.Size()))
+		BatchesSent.Inc()
 	}
 
 	return nil
 }
 
 // Start creating batches and sending data to the provided Firehose Stream.
-func (fb *FirehoseBatcher) Start(streamName string) error {
+func (fb *FirehoseBatcher) Start() error {
 	go fb.startBatching()
-	return fb.sendBatches(streamName)
+	return fb.sendBatches(fb.streamName)
 }

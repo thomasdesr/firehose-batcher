@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/firehose"
 	flags "github.com/jessevdk/go-flags"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	firehosebatcher "github.com/thomaso-mirodin/firehose-batcher"
 	"github.com/thomaso-mirodin/tailer"
 )
@@ -86,13 +88,23 @@ func main() {
 		log.Fatal(errors.Wrap(err, "failed to parse flags"))
 	}
 
-	batcher, err := firehosebatcher.New(f.cfg.firehose, time.Second*60)
+	batcher, err := firehosebatcher.New(
+		f.cfg.firehose,
+		f.Args.FirehoseStreamName,
+		time.Second*60,
+	)
 	if err != nil {
 		log.Fatal(errors.Wrap(err, "failed to create firehose batcher"))
 	}
 
+	firehosebatcher.RegisterMetrics(prometheus.DefaultRegisterer)
 	go func() {
-		err := batcher.Start(f.Args.FirehoseStreamName)
+		http.Handle("/metrics", prometheus.Handler())
+		http.ListenAndServe("127.0.0.1:8080", nil)
+	}()
+
+	go func() {
+		err := batcher.Start()
 		if err != nil {
 			log.Fatal(errors.Wrap(err, "batch sending exited early"))
 		}

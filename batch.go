@@ -3,6 +3,7 @@ package firehosebatcher
 import (
 	"github.com/aws/aws-sdk-go/service/firehose"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
@@ -14,12 +15,19 @@ var (
 type Batch struct {
 	size     int
 	contents []*firehose.Record
+
+	fillTimer *prometheus.Timer
 }
 
 // NewBatch construct a batch with an intializing record
 func NewBatch(r *firehose.Record) *Batch {
-	b := new(Batch)
+	b := &Batch{
+		fillTimer: prometheus.NewTimer(BatchFillLatency),
+	}
 	b.Add(r)
+
+	BatchesCreated.Inc()
+
 	return b
 }
 
@@ -39,8 +47,16 @@ func (b *Batch) Add(r *firehose.Record) error {
 	}
 
 	b.contents = append(b.contents, r)
+
 	b.size += rSize
+	BytesBatched.Add(float64(rSize))
+
 	return nil
+}
+
+// Size return the number bytes stored in this batch
+func (b *Batch) Size() int {
+	return b.size
 }
 
 // Length return the number of records in the batch
