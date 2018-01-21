@@ -7,21 +7,15 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Batch limit taken from https://docs.aws.amazon.com/firehose/latest/APIReference/API_PutRecordBatch.html
-const (
-	BATCH_ITEM_LIMIT = 500
-	BATCH_SIZE_LIMIT = 4 * 1024 * 1024 // 4MB
-
-	PER_ITEM_SIZE_LIMIT = 1024 * 1024 // 1 MB
-)
-
 type FirehoseBatcher struct {
 	maxSendInterval time.Duration
 
 	firehoseClient *firehose.Firehose
 
-	inputBuffer chan []byte
-	closed      bool
+	inputBuffer     chan []byte
+	batchSendBuffer chan *Batch
+
+	closed bool
 }
 
 func New(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, error) {
@@ -29,7 +23,8 @@ func New(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, e
 		maxSendInterval: sendInterval,
 		firehoseClient:  fc,
 
-		inputBuffer: make(chan []byte, BATCH_ITEM_LIMIT),
+		inputBuffer:     make(chan []byte, BATCH_ITEM_LIMIT),
+		batchSendBuffer: make(chan *Batch, 1),
 	}
 
 	return fb, nil
@@ -55,45 +50,48 @@ func (fb *FirehoseBatcher) AddFromChan(c chan []byte) error {
 	return nil
 }
 
-func (fb *FirehoseBatcher) Start(streamName string) error {
-	var overflow *firehose.Record
-	for stop := false; !stop; {
-		batch := make([]*firehose.Record, 0, BATCH_ITEM_LIMIT)
-		batchSize := 0
+func (fb *FirehoseBatcher) startBatching() {
+	defer close(fb.batchSendBuffer)
 
-		if overflow == nil {
-			batch = append(batch, &firehose.Record{Data: <-fb.inputBuffer})
-		} else {
-			batch = append(batch, overflow)
-			overflow = nil
-		}
+	for {
+		batch := NewBatch(&firehose.Record{Data: <-fb.inputBuffer})
 
 	BatchingLoop:
-		for i := 0; i < BATCH_ITEM_LIMIT-1; i++ {
+		for batch.Length() < BATCH_ITEM_LIMIT {
 			select {
 			case <-time.After(fb.maxSendInterval):
 				break BatchingLoop
-
-			case item, ok := <-fb.inputBuffer:
+			case b, ok := <-fb.inputBuffer:
 				if !ok {
-					// Input channel is closed, we're done here exit the batching loop, send the last batch, and return
-					stop = true
-					break BatchingLoop
+					// Input channel is closed, we're done here send the last batch and return
+					fb.batchSendBuffer <- batch
+					return
 				}
 
-				record := &firehose.Record{Data: item}
-				if batchSize+len(item) > BATCH_SIZE_LIMIT {
-					// We're gonna overflow a batch, save the current one and end the batch early
-					overflow = record
-					break BatchingLoop
-				}
+				record := &firehose.Record{Data: b}
 
-				batch = append(batch, record)
-				batchSize += len(item)
+				switch err := batch.Add(record); err {
+				case nil:
+					// Noop
+				case ErrSizeOverflow, ErrLengthOverflow:
+					// Send the batch and restart with overflowing record
+					fb.batchSendBuffer <- batch
+					batch = NewBatch(record)
+				default:
+					panic("Unknown error from batch construction")
+				}
 			}
-		}
 
-		if err := fb.sendBatch(streamName, batch); err != nil {
+			fb.batchSendBuffer <- batch
+		}
+	}
+}
+
+func (fb *FirehoseBatcher) sendBatches(streamName string) error {
+	for batch := range fb.batchSendBuffer {
+		err := batch.Send(fb.firehoseClient, streamName)
+		// TODO(@thomas): retry logic here :D
+		if err != nil {
 			return errors.Wrap(err, "error sending batch")
 		}
 	}
@@ -101,21 +99,7 @@ func (fb *FirehoseBatcher) Start(streamName string) error {
 	return nil
 }
 
-func (fb *FirehoseBatcher) sendBatch(streamName string, batch []*firehose.Record) error {
-	prbo, err := fb.firehoseClient.PutRecordBatch(&firehose.PutRecordBatchInput{
-		DeliveryStreamName: &streamName,
-
-		Records: batch,
-	})
-
-	if err != nil {
-		return err
-	} else if *prbo.FailedPutCount > 0 {
-		return errors.Errorf(
-			"failed to send the full batch (%d failed), retries not currently handled",
-			*prbo.FailedPutCount,
-		)
-	}
-
-	return nil
+func (fb *FirehoseBatcher) Start(streamName string) error {
+	go fb.startBatching()
+	return fb.sendBatches(streamName)
 }
