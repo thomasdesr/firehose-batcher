@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/firehose"
 	flags "github.com/jessevdk/go-flags"
 	"github.com/pkg/errors"
+	firehosebatcher "github.com/thomaso-mirodin/firehose-batcher"
 	"github.com/thomaso-mirodin/tailer"
 )
 
@@ -85,7 +86,7 @@ func main() {
 		log.Fatal(errors.Wrap(err, "failed to parse flags"))
 	}
 
-	batcher, err := NewFirehoseBatcher(f.cfg.firehose, time.Second*60)
+	batcher, err := firehosebatcher.New(f.cfg.firehose, time.Second*60)
 	if err != nil {
 		log.Fatal(errors.Wrap(err, "failed to create firehose batcher"))
 	}

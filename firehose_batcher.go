@@ -1,4 +1,4 @@
-package main
+package firehosebatcher
 
 import (
 	"time"
@@ -24,7 +24,7 @@ type FirehoseBatcher struct {
 	closed      bool
 }
 
-func NewFirehoseBatcher(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, error) {
+func New(fc *firehose.Firehose, sendInterval time.Duration) (*FirehoseBatcher, error) {
 	fb := &FirehoseBatcher{
 		maxSendInterval: sendInterval,
 		firehoseClient:  fc,
