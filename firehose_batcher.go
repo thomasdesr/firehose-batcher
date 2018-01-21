@@ -62,8 +62,11 @@ func (fb *FirehoseBatcher) startBatching() {
 	BatchingLoop:
 		for batch.Length() < BATCH_ITEM_LIMIT {
 			select {
+			// Timeout, send even if not full
 			case <-time.After(fb.maxSendInterval):
 				break BatchingLoop
+
+			// Read next and try to include in batch
 			case b, ok := <-fb.inputBuffer:
 				if !ok {
 					// Input channel is closed, we're done here send the last batch and return
@@ -72,12 +75,11 @@ func (fb *FirehoseBatcher) startBatching() {
 				}
 
 				record := &firehose.Record{Data: b}
-
 				switch err := batch.Add(record); err {
 				case nil:
 					// Noop
 				case ErrBatchSizeOverflow, ErrBatchLengthOverflow:
-					// Send the batch along and restart with the overflowing record
+					// Batch is full: send the batch along and start a new batch with the overflowing record
 					fb.batchSendBuffer <- batch
 					batch = NewBatch(record)
 				default:
